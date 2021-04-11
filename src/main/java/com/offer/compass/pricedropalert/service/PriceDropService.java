@@ -18,9 +18,11 @@ public interface PriceDropService {
 
     void makeCanvaDesign() throws Exception;
 
-    void getYoutubeDescription(String dept) throws FileNotFoundException, UnsupportedEncodingException;
+    void getTextDetails(String dept) throws FileNotFoundException, UnsupportedEncodingException;
 
     void test(String url) throws InterruptedException;
 
     void getPriceHistoryGraphDetails() throws InterruptedException;
+
+    void getPriceDropDetails() throws InterruptedException;
 }

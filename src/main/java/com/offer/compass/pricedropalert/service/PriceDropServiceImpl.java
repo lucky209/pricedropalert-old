@@ -6,6 +6,7 @@ import com.offer.compass.pricedropalert.constant.PriceHistoryConstants;
 import com.offer.compass.pricedropalert.constant.PropertyConstants;
 import com.offer.compass.pricedropalert.entity.*;
 import com.offer.compass.pricedropalert.helper.*;
+import com.offer.compass.pricedropalert.model.VoiceTextDetails;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.openqa.selenium.By;
@@ -25,6 +26,7 @@ import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -58,6 +60,10 @@ public class PriceDropServiceImpl implements PriceDropService {
     private CurrentDealHelper currentDealHelper;
     @Autowired
     private CanvaHelper canvaHelper;
+    @Autowired
+    private PriceDropDetailRepo priceDropDetailRepo;
+    @Autowired
+    private PriceDropAlertProcessHelper priceDropAlertProcessHelper;
 
     @Value("${product.needed.count.default.value}")
     private int productNeededCount;
@@ -169,6 +175,170 @@ public class PriceDropServiceImpl implements PriceDropService {
     }
 
     @Override
+    public void getPriceDropDetails() throws InterruptedException {
+        priceDropDetailRepo.deleteAll();
+        List<PriceHistoryGraph> priceHistoryGraphList = priceHistoryGraphRepo.findByIsPicked(true);
+        int maxThreads = commonHelper.maxThreads(priceHistoryGraphList.size());
+        if (priceHistoryGraphList.size() > 0) {
+            log.info("Deals found from price_history table is " + priceHistoryGraphList.size());
+            ExecutorService pool = Executors.newFixedThreadPool(maxThreads);
+            for (List<PriceHistoryGraph> batchEntities : Lists.partition(priceHistoryGraphList,
+                    Math.min(priceHistoryGraphList.size(), searchPerPage))) {
+                Thread thread = new PriceDropAlertProcess(batchEntities, priceDropAlertProcessHelper);
+                pool.execute(thread);
+            }
+            pool.shutdown();
+            pool.awaitTermination(5, TimeUnit.HOURS);
+            log.info("Completed the get Site Details process...");
+        }
+    }
+
+    @Override
+    public void shortenUrl() throws InterruptedException {
+        List<PriceDropDetail> shortenUrlList = priceDropDetailRepo.findByIsPicked(true)
+                .stream().sorted(Comparator.comparing(PriceDropDetail::getProductName)).collect(Collectors.toList());
+        if (!shortenUrlList.isEmpty()) {
+            log.info("Number of deals found from site_details table is " + shortenUrlList.size());
+            ExecutorService pool = Executors.newFixedThreadPool(1);
+            for (List<PriceDropDetail> batchEntities : Lists.partition(shortenUrlList,
+                    Math.min(shortenUrlList.size(), searchPerPage))) {
+                Thread thread = new ShortenUrlProcess(batchEntities, siteDetailHelper);
+                pool.execute(thread);
+            }
+            pool.shutdown();
+            pool.awaitTermination(5, TimeUnit.HOURS);
+            log.info("Completed the shorten url process...");
+        }
+
+        //update product number
+        log.info("Setting up the product numbers...");
+        for (int i = 0; i < shortenUrlList.size(); i++) {
+            shortenUrlList.get(i).setProductNo(i+1);
+            priceDropDetailRepo.save(shortenUrlList.get(i));
+        }
+        log.info("Product number set up successfully...");
+    }
+
+    @Override
+    public void makeCanvaDesign() throws Exception {
+        List<SiteDetail> canvaList = siteDetailRepo.findByIsPicked(true)
+                .stream().sorted(Comparator.comparing(SiteDetail::getProductName)).collect(Collectors.toList());
+        log.info("Number of deals found from site_details table is " + canvaList.size());
+        Property property = propertyRepo.findByPropName(PropertyConstants.HEADLESS_MODE);
+        if (!canvaList.isEmpty()) {
+            boolean isEnabled = property.isEnabled();
+            property.setEnabled(false);
+            propertyRepo.save(property);
+            canvaHelper.makeCanvaDesign(canvaList);
+            property.setEnabled(isEnabled);
+            propertyRepo.save(property);
+        }
+    }
+
+    @Override
+    public void getTextDetails(String dept) throws FileNotFoundException, UnsupportedEncodingException {
+        String mainPath = Constant.PATH_TO_SAVE_YOUTUBE_DESC + dept + "-" + LocalDate.now() + ".txt";
+        List<PriceDropDetail> youtubeDescList = priceDropDetailRepo.findByIsPicked(true)
+                .stream().sorted(Comparator.comparing(PriceDropDetail::getProductName)).collect(Collectors.toList());
+        //write youtube desc text file
+        PrintWriter writerDesc = new PrintWriter(mainPath, "UTF-8");
+        for (PriceDropDetail priceDropDetail : youtubeDescList) {
+            writerDesc.println(priceDropDetail.getProductNo() + ". " + priceDropDetail.getProductName());
+            if (priceDropDetail.getAmazonShortUrl() != null)
+                writerDesc.println("Amazon url -- " + priceDropDetail.getAmazonShortUrl());
+            if (priceDropDetail.getFlipkartShortUrl() != null) {
+                writerDesc.println("Flipkart url -- " + priceDropDetail.getFlipkartShortUrl());
+            }
+            writerDesc.println();
+        }
+        writerDesc.close();
+        log.info("Description is printed successfully...");
+        List<VoiceTextDetails> voiceDetailsTextList = new ArrayList<>();
+        for (PriceDropDetail priceDropDetail : youtubeDescList) {
+            PriceHistoryGraph priceHistoryGraph = priceHistoryGraphRepo.findByPhUrl(priceDropDetail.getPhUrl());
+            VoiceTextDetails voiceTextDetails = new VoiceTextDetails();
+            voiceTextDetails.setDropChances(priceHistoryGraph.getDropChances());
+            voiceTextDetails.setHighestPrice(priceHistoryGraph.getHighestPrice());
+            voiceTextDetails.setLowestPrice(priceHistoryGraph.getLowestPrice());
+            voiceTextDetails.setPhUrl(priceHistoryGraph.getPhUrl());
+            voiceTextDetails.setPricedropFromDate(priceHistoryGraph.getPricedropFromDate());
+            voiceTextDetails.setPricedropFromPrice(priceHistoryGraph.getPricedropFromPrice());
+            voiceTextDetails.setPricedropToPrice(priceHistoryGraph.getPricedropToPrice());
+            voiceTextDetails.setProductName(priceHistoryGraph.getProductName());
+            voiceTextDetails.setProductNo(priceDropDetail.getProductNo());
+            voiceTextDetails.setRatingStar(priceHistoryGraph.getRatingStar());
+            voiceTextDetails.setSiteName(priceDropDetail.getSiteName());
+            voiceTextDetails.setUrl(priceDropDetail.getSiteUrl());
+            voiceDetailsTextList.add(voiceTextDetails);
+        }
+        mainPath = Constant.PATH_TO_SAVE_YOUTUBE_DESC + dept + "-VoiceText-" + LocalDate.now() + ".txt";
+        PrintWriter writerVoiceDesc = new PrintWriter(mainPath, "UTF-8");
+        for (VoiceTextDetails voiceTextDetail : voiceDetailsTextList) {
+            writerVoiceDesc.println(voiceTextDetail.getProductNo() + "."
+                    + voiceTextDetail.getProductName() + "--" + voiceTextDetail.getSiteName());
+            writerVoiceDesc.println(voiceTextDetail.getUrl());
+            writerVoiceDesc.println(voiceTextDetail.getPhUrl());
+            writerVoiceDesc.println("Lowest price -- " + voiceTextDetail.getLowestPrice());
+            writerVoiceDesc.println("Highest price -- " + voiceTextDetail.getHighestPrice());
+            writerVoiceDesc.println("Todays price -- " + voiceTextDetail.getPricedropToPrice());
+            writerVoiceDesc.println("From Date -- " + voiceTextDetail.getPricedropFromDate() +
+                    "  From Price -- " + voiceTextDetail.getPricedropFromPrice());
+            writerVoiceDesc.println("Drop chances -- " + voiceTextDetail.getDropChances());
+            writerVoiceDesc.println("Rating star -- " + voiceTextDetail.getRatingStar());
+            writerVoiceDesc.println();
+        }
+        writerVoiceDesc.close();
+        log.info("Voice details is printed successfully...");
+    }
+
+    @Override
+    public void downloadImages(String dept) throws InterruptedException {
+        List<SiteDetail> shortenUrlList = siteDetailRepo.findByIsPicked(true)
+                .stream().sorted(Comparator.comparing(SiteDetail::getProductName)).collect(Collectors.toList());
+        if (!shortenUrlList.isEmpty()) {
+            log.info("Number of deals found from site_details table is " + shortenUrlList.size());
+            ExecutorService pool = Executors.newFixedThreadPool(1);
+            int imgCount = 0;
+            for (List<SiteDetail> batchEntities : Lists.partition(shortenUrlList,
+                    Math.min(shortenUrlList.size(), searchPerPage))) {
+                Thread thread = new downloadImagesProcess(batchEntities, siteDetailHelper, dept, imgCount);
+                pool.execute(thread);
+                imgCount = imgCount + searchPerPage;
+            }
+            pool.shutdown();
+            pool.awaitTermination(5, TimeUnit.HOURS);
+        }
+        log.info("Completed download images process...");
+        //update product number
+        log.info("Setting up the product numbers...");
+        for (int i = 0; i < shortenUrlList.size(); i++) {
+            shortenUrlList.get(i).setProductNo(i+1);
+            siteDetailRepo.save(shortenUrlList.get(i));
+        }
+        log.info("Product number set up successfully...");
+    }
+
+    @Override
+    public void updateFilterFactor() throws InterruptedException {
+        List<SiteDetail> updateList = siteDetailRepo.findByIsPicked(true);
+        updateList = updateList
+                .stream()
+                .filter(entity -> !neglectedDepartments.contains(entity.getMainDept())).collect(Collectors.toList());
+        if (updateList.size() > 0) {
+            log.info("Number of deals found from price history table is " + updateList.size());
+            ExecutorService pool = Executors.newFixedThreadPool(1);
+            for (List<SiteDetail> batchEntities : Lists.partition(updateList,
+                    Math.min(updateList.size(), searchPerPage))) {
+                Thread thread = new UpdateFilterFactorProcess(batchEntities, siteDetailHelper);
+                pool.execute(thread);
+            }
+            pool.shutdown();
+            pool.awaitTermination(5, TimeUnit.HOURS);
+            log.info("Completed update filter factor process...");
+        }
+    }
+
+    @Override
     public void getSiteDetails() throws Exception {
         siteDetailRepo.deleteAll();
         List<PriceHistory> priceHistoryList = priceHistoryRepo.findAll();
@@ -208,194 +378,9 @@ public class PriceDropServiceImpl implements PriceDropService {
         }
     }
 
-    @Override
-    public void updateFilterFactor() throws InterruptedException {
-        List<SiteDetail> updateList = siteDetailRepo.findByIsPicked(true);
-        updateList = updateList
-                .stream()
-                .filter(entity -> !neglectedDepartments.contains(entity.getMainDept())).collect(Collectors.toList());
-        if (updateList.size() > 0) {
-            log.info("Number of deals found from price history table is " + updateList.size());
-            ExecutorService pool = Executors.newFixedThreadPool(1);
-            for (List<SiteDetail> batchEntities : Lists.partition(updateList,
-                    Math.min(updateList.size(), searchPerPage))) {
-                Thread thread = new UpdateFilterFactorProcess(batchEntities, siteDetailHelper);
-                pool.execute(thread);
-            }
-            pool.shutdown();
-            pool.awaitTermination(5, TimeUnit.HOURS);
-            log.info("Completed update filter factor process...");
-        }
-    }
-
-    @Override
-    public void shortenUrl() throws InterruptedException {
-        List<SiteDetail> shortenUrlList = siteDetailRepo.findByIsPicked(true)
-                .stream().sorted(Comparator.comparing(SiteDetail::getProductName)).collect(Collectors.toList());
-        if (!shortenUrlList.isEmpty()) {
-            log.info("Number of deals found from site_details table is " + shortenUrlList.size());
-            ExecutorService pool = Executors.newFixedThreadPool(1);
-            for (List<SiteDetail> batchEntities : Lists.partition(shortenUrlList,
-                    Math.min(shortenUrlList.size(), searchPerPage))) {
-                Thread thread = new ShortenUrlProcess(batchEntities, siteDetailHelper);
-                pool.execute(thread);
-            }
-            pool.shutdown();
-            pool.awaitTermination(5, TimeUnit.HOURS);
-            log.info("Completed the shorten url process...");
-        }
-    }
-
-    @Override
-    public void downloadImages(String dept) throws InterruptedException {
-        List<SiteDetail> shortenUrlList = siteDetailRepo.findByIsPicked(true)
-                .stream().sorted(Comparator.comparing(SiteDetail::getProductName)).collect(Collectors.toList());
-        if (!shortenUrlList.isEmpty()) {
-            log.info("Number of deals found from site_details table is " + shortenUrlList.size());
-            ExecutorService pool = Executors.newFixedThreadPool(1);
-            int imgCount = 0;
-            for (List<SiteDetail> batchEntities : Lists.partition(shortenUrlList,
-                    Math.min(shortenUrlList.size(), searchPerPage))) {
-                Thread thread = new downloadImagesProcess(batchEntities, siteDetailHelper, dept, imgCount);
-                pool.execute(thread);
-                imgCount = imgCount + searchPerPage;
-            }
-            pool.shutdown();
-            pool.awaitTermination(5, TimeUnit.HOURS);
-        }
-        log.info("Completed download images process...");
-        //update product number
-        log.info("Setting up the product numbers...");
-        for (int i = 0; i < shortenUrlList.size(); i++) {
-            shortenUrlList.get(i).setProductNo(i+1);
-            siteDetailRepo.save(shortenUrlList.get(i));
-        }
-        log.info("Product number set up successfully...");
-    }
-
-    @Override
-    public void makeCanvaDesign() throws Exception {
-        List<SiteDetail> canvaList = siteDetailRepo.findByIsPicked(true)
-                .stream().sorted(Comparator.comparing(SiteDetail::getProductName)).collect(Collectors.toList());
-        log.info("Number of deals found from site_details table is " + canvaList.size());
-        Property property = propertyRepo.findByPropName(PropertyConstants.HEADLESS_MODE);
-        if (!canvaList.isEmpty()) {
-            boolean isEnabled = property.isEnabled();
-            property.setEnabled(false);
-            propertyRepo.save(property);
-            canvaHelper.makeCanvaDesign(canvaList);
-            property.setEnabled(isEnabled);
-            propertyRepo.save(property);
-        }
-    }
-
-    @Override
-    public void getYoutubeDescription(String dept) throws FileNotFoundException, UnsupportedEncodingException {
-        String mainPath = Constant.PATH_TO_SAVE_YOUTUBE_DESC + dept + "-" + LocalDate.now() + ".txt";
-        List<SiteDetail> youtubeDescList = siteDetailRepo.findByIsPicked(true)
-                .stream().sorted(Comparator.comparing(SiteDetail::getProductName)).collect(Collectors.toList());
-        //write text file
-        PrintWriter writerDesc = new PrintWriter(mainPath, "UTF-8");
-        for (SiteDetail siteDetail : youtubeDescList) {
-            writerDesc.println(siteDetail.getProductNo() + ". " + siteDetail.getProductName());
-            if (siteDetail.getAmazonShortUrl() != null)
-                writerDesc.println("Amazon url -- " + siteDetail.getAmazonShortUrl());
-            if (siteDetail.getFlipkartShortUrl() != null) {
-                writerDesc.println("Flipkart url -- " + siteDetail.getFlipkartShortUrl());
-            }
-            writerDesc.println();
-        }
-        writerDesc.close();
-        log.info("Description is printed successfully...");
-    }
 
     @Override
     public void test(String url) throws InterruptedException {
-        WebDriver browser = browserHelper.openBrowser(true);
-        browser.get(url);
-        //check current price loaded
-        WebDriverWait wait = new WebDriverWait(browser, 15);
-        WebElement cpElement = wait.until(ExpectedConditions.presenceOfElementLocated(
-                By.id("currentPrice")));
-        while (StringUtils.isBlank(cpElement.getText()) ||
-                cpElement.getText().trim().equalsIgnoreCase("Checking...")) {
-            cpElement = browser.findElement(By.id("currentPrice"));
-        }
-        //get CP dot element dot line
-        WebElement cpDotElement = null;
-        List<WebElement> highCharts = browser.findElements(By.className("highcharts-plot-line"));
-        if (!highCharts.isEmpty()) {
-            for (WebElement element : highCharts) {
-                if (element.getAttribute("stroke") != null) {
-                    if (element.getAttribute("stroke").equalsIgnoreCase("purple")) {
-                        cpDotElement = element;
-                    }
-                }
-            }
-        }
-        //fetch values
-        String priceDropDate = ""; String dropFromPrice = "";
-        if (cpDotElement != null) {
-            Dimension dimension = cpDotElement.getSize();
-            int width = dimension.getWidth()/2;
-            Actions actions = new Actions(browser);
-            //move to the ned of the element
-            actions.moveToElement(cpDotElement, width, 0);
-            actions.moveToElement(cpDotElement, width, 0);
-            actions.build().perform();
-            log.info("Moved to the end of the element");
-            List<WebElement> textElements = browser.findElements(By.tagName("text"));
-            for (WebElement textElement : textElements) {
-                if (textElement.getAttribute("x").equals("8")) {
-                    List<WebElement> childElements = textElement.findElements(By.xpath("./*"));
-                    if (childElements.size() == 4) {
-                        log.info("found desired element");
-                        priceDropDate = childElements.get(0).getAttribute(Constant.ATTRIBUTE_INNER_HTML).trim();
-                        dropFromPrice = childElements.get(3).getAttribute(Constant.ATTRIBUTE_INNER_HTML).trim();
-                        break;
-                    }
-                }
-            }
-            Thread.sleep(5000);
-            String lastDate; String lastPrice = null;
-            //now hover very slow to left maybe width of -10?
-            for (int i=1;i<=5;i++) {
-                actions.moveToElement(cpDotElement, width-(i*12), 0);
-                actions.moveToElement(cpDotElement, width-(i*12), 0);
-                actions.build().perform();
-                Thread.sleep(1000);
-                textElements = browser.findElements(By.tagName("text"));
-                for (WebElement textElement : textElements) {
-                    if (textElement.getAttribute("x").equals("8")) {
-                        List<WebElement> childElements = textElement.findElements(By.xpath("./*"));
-                        if (childElements.size() == 4) {
-                            lastDate = childElements.get(0).getAttribute(Constant.ATTRIBUTE_INNER_HTML).trim();
-                            lastPrice = childElements.get(3).getAttribute(Constant.ATTRIBUTE_INNER_HTML).trim();
-                            if (!dropFromPrice.equals(lastPrice)) {
-                                if (!lastDate.equals(priceDropDate)) {
-                                    log.info("diff node value found");
-                                    log.info("lastDate {}", lastDate);
-                                    log.info("lastPrice {}", lastPrice);
-                                    log.info("priceDropDate {}", priceDropDate);
-                                    log.info("dropFromPrice {}", dropFromPrice);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                if (lastPrice != null)
-                    if (!lastPrice.equals(dropFromPrice))
-                        break;
-            }
 
-            if (lastPrice != null) {
-                if (lastPrice.equals(dropFromPrice))
-                    log.info("Couldnt find diff node value for the url {}", browser.getCurrentUrl());
-            } else {
-                log.info("Couldnt find diff node value for the url {}", browser.getCurrentUrl());
-            }
-        }
-        browser.quit();
     }
 }

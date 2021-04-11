@@ -30,6 +30,13 @@ public class PriceDropController {
         return true;
     }
 
+    @GetMapping("/price-drop/get-pricedrop-details")
+    public boolean getPriceHistoryDropDetails() throws Exception {
+        log.info("Request received to fetch PriceDrop details");
+        priceDropService.getPriceDropDetails();
+        return true;
+    }
+
     @GetMapping("/price-drop/get-price-history-details")
     public boolean getPriceHistoryDetails() throws Exception {
         log.info("Request received to fetch PriceHistory Details");
@@ -75,7 +82,7 @@ public class PriceDropController {
     @GetMapping("/price-drop/get-text-details")
     public boolean getTextDetails(@RequestBody String dept) throws Exception {
         log.info("Request received get Text Details");
-        priceDropService.getYoutubeDescription(dept);
+        priceDropService.getTextDetails(dept);
         return true;
     }
 

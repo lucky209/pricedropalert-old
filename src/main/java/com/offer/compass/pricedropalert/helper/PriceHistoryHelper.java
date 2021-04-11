@@ -210,7 +210,7 @@ public class PriceHistoryHelper {
         return LocalDate.parse(phDate, formatter);
     }
 
-    private void moveOverElementByOffset(WebElement element, int width, Actions actions) {
+    private synchronized void moveOverElementByOffset(WebElement element, int width, Actions actions) {
         actions.moveToElement(element, width, 0);
         actions.moveToElement(element, width, 0);
         actions.build().perform();

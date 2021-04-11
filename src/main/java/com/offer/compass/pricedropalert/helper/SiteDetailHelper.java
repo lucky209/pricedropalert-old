@@ -21,7 +21,6 @@ import java.io.File;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.net.MalformedURLException;
 import java.net.URL;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -36,6 +35,8 @@ public class SiteDetailHelper {
     private BrowserHelper browserHelper;
     @Autowired
     private SiteDetailRepo siteDetailRepo;
+    @Autowired
+    private PriceDropDetailRepo priceDropDetailRepo;
     @Autowired
     private CommonHelper commonHelper;
     @Autowired
@@ -92,7 +93,7 @@ public class SiteDetailHelper {
         }
     }
 
-    private boolean isAvailableToBuy(WebDriver browser) {
+    boolean isAvailableToBuy(WebDriver browser) {
         return !(browser.getPageSource().toLowerCase().contains("sold out") ||
                 browser.getPageSource().toLowerCase().contains("currently unavailable"));
     }
@@ -169,7 +170,7 @@ public class SiteDetailHelper {
         return null;
     }
 
-    private synchronized String getAmazonProductName(WebDriver browser) {
+    synchronized String getAmazonProductName(WebDriver browser) {
         List<WebElement> elements = browser.findElements(By.id("productTitle"));
         if (!elements.isEmpty()) {
             return elements.get(0).getText().trim();
@@ -194,7 +195,7 @@ public class SiteDetailHelper {
         return null;
     }
 
-    private synchronized String getFlipkartProductName(WebDriver browser) {
+    synchronized String getFlipkartProductName(WebDriver browser) {
         List<WebElement> elements = browser.findElements(By.className("B_NuCI"));
         if (!elements.isEmpty()) {
             return elements.get(0).getText().trim();
@@ -203,7 +204,7 @@ public class SiteDetailHelper {
         return null;
     }
 
-    private synchronized List<String> getAmazonDepts(WebDriver browser) {
+    synchronized List<String> getAmazonDepts(WebDriver browser) {
         List<String> dept = new ArrayList<>();
         List<WebElement> deptElements = browser.findElements(By.id("wayfinding-breadcrumbs_feature_div"));
         if (!deptElements.isEmpty()) {
@@ -229,7 +230,7 @@ public class SiteDetailHelper {
         return dept;
     }
 
-    private synchronized List<String> getFlipkartDepts(WebDriver browser) throws Exception {
+    synchronized List<String> getFlipkartDepts(WebDriver browser) throws Exception {
         List<String> dept = new ArrayList<>();
         List<WebElement> deptElements = browser.findElements(By.className("_1MR4o5"));
         if (!deptElements.isEmpty()) {
@@ -325,7 +326,7 @@ public class SiteDetailHelper {
         }
     }
 
-    public void shortenUrlProcess(List<SiteDetail> batchEntities, boolean isCrossSiteUrl) throws Exception {
+    public void shortenUrlProcess(List<PriceDropDetail> batchEntities, boolean isCrossSiteUrl) throws Exception {
         Property property = propertyRepo.findByPropName(PropertyConstants.HEADLESS_MODE);
         boolean isEnabled = property.isEnabled();
         property.setEnabled(false);
@@ -375,7 +376,7 @@ public class SiteDetailHelper {
                             batchEntities.get(i).setFlipkartShortUrl(copiedUrl);
                         }
                     }
-                    siteDetailRepo.save(batchEntities.get(i));
+                    priceDropDetailRepo.save(batchEntities.get(i));
                 }
             } catch (Exception ex) {
                 log.info("Exception occurred for the url {}. Exception is {}", browser.getCurrentUrl(), ex.getMessage());
@@ -442,7 +443,7 @@ public class SiteDetailHelper {
         browser.quit();
     }
 
-    private void downloadFlipkartImages(WebDriver browser, int count, String dept) throws Exception {
+    void downloadFlipkartImages(WebDriver browser, int count, String dept) throws Exception {
         List<WebElement> liElements = browser.findElement(By.className("_2mLllQ")).findElements(
                 By.tagName(Constant.TAG_LI));
         Actions actions = new Actions(browser);
@@ -461,13 +462,13 @@ public class SiteDetailHelper {
         }
     }
 
-    private void downloadAmazonImages(WebDriver browser, int count, String dept) throws Exception {
+    void downloadAmazonImages(WebDriver browser, int count, String dept) throws Exception {
         browser.findElement(By.id(Constant.IMAGE_ID)).click();
         Thread.sleep(1000);
         List<WebElement> thumbnailElements = browser.findElements(By.cssSelector(Constant.THUMBNAILS_CSS_SELECTOR));
         for (int j = 0; j < thumbnailElements.size(); j++) {
             browser.findElement(By.id("ivImage_" + j)).click();
-            Thread.sleep(1000);
+            Thread.sleep(1500);
             this.downloadAndSaveAmazonProductImage(browser, (count+1) + "-" + (j+1) + Constant.IMAGE_FORMAT, dept);
         }
     }
